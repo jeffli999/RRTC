@@ -933,164 +933,77 @@ int main(int argc, char *argv[] )
 	int kind[4] = {3, 7};
 	//vector<int> cacheList = {100, 200, 300, 400, 500};
 	vector<int> cacheList = {100, 200, 400};
-	for(int cc = 0; cc < cacheList.size(); cc++) 
+	for (int cc = 0; cc < cacheList.size(); cc++) { 
 		for(int kc = 0; kc < 2; kc++ ) {
+			//initial
+			CACHE_LINE_SIZE = cacheList[cc];
+			pre_flow_table.clear();
+			flow_table.clear();
+			evict_stat.clear();
+			cache = vector<vector<cache_node> >(CACHE_LINE_NUM, vector<cache_node>(CACHE_LINE_SIZE));
 
-		//initial
-		int i = kind[kc];
-		CACHE_LINE_SIZE = cacheList[cc];
-		pre_flow_table.clear();
-		flow_table.clear();
-		evict_stat.clear();
-		cache = vector<vector<cache_node> >(CACHE_LINE_NUM, vector<cache_node>(CACHE_LINE_SIZE));
+			HH_Table.clear();
+			NF_Table.clear();
+			NF_Counter.Csum = NF_Counter.Fsum = 0;
+			HH_Hash.clear();
+			NF_Hash.clear();
+			NF_Hash.resize(2000, 0);
+			updateTime = 0;
+			srand((unsigned)time(NULL));	// 产生md5 hash中所用伪随机数种子
 
-		HH_Table.clear();
-		NF_Table.clear();
-		NF_Counter.Csum = NF_Counter.Fsum = 0;
+			fp = fopen(argv[1], "rb");
+			struct _5tuple pre_tuple;
+			unsigned int tmp1, tmp2;
+			// pre-processing
+			while (fscanf(fp, "%d %d %d %d %d %u %u\n", &pre_tuple.src_ip, &pre_tuple.dst_ip, 
+						&pre_tuple.src_port, &pre_tuple.dst_port, &pre_tuple.proto, &tmp1, &tmp2) != EOF) {
+				//if (fread(&pre_tuple, sizeof(pre_tuple), 1, fp) != 1)	// eof
+				//	break;
+				reverse(&pre_tuple);
+				if (!pre_flow_table_query(&pre_tuple))
+					pre_flow_table_insert(&pre_tuple);
+				pre_flow_table_update(&pre_tuple);
+			}
 
-		HH_Hash.clear();
-		NF_Hash.clear();
-		NF_Hash.resize(2000, 0);
+			printf("flows: %d\n", pre_flow_table.size());
+			//rebuild();
+			//return 0;
+			rewind(fp);
 
-
-		updateTime = 0;
-
-		srand((unsigned)time(NULL));	// 产生md5 hash中所用伪随机数种子
-
-		fp = fopen(argv[1], "rb");
-		/*hy
-		string inputFile = "argv[1]";
-		ifstream intrace(inputFile.c_str());
-		*/
-
-		
-		struct _5tuple pre_tuple;
-		unsigned int temp1;
-		unsigned int temp2;
-		//int i = 0;
-		// pre-processing
-
-//int	npackets = 0;
-//printf("Preprocess...\n");
-		while(1)
-		{
-
-			if (fscanf(fp, "%d %d %d %d %d %u %u\n",
-				&pre_tuple.src_ip, &pre_tuple.dst_ip, &pre_tuple.src_port, &pre_tuple.dst_port, &pre_tuple.proto, &temp1, &temp2) == EOF)
-			{
-				
+			switch (kind[kc]) {
+			case 3: 
+				printf("LRU:\n");
+				cache_init(LRU);
 				break;
-			}
-
-//if ((++npackets & 0xFFFFF) == 0)
-//	printf("%d: %d %d %d %d %d %u %u\n", npackets,
-//				pre_tuple.src_ip, pre_tuple.dst_ip, pre_tuple.src_port, pre_tuple.dst_port, pre_tuple.proto, temp1, temp2);
-/*
-			if (fread(&pre_tuple, sizeof(pre_tuple), 1, fp) != 1)	// eof
-			{
+			case 7:
+				printf("BTE:\n");
+				cache_init(BTE);
 				break;
-			}
-*/
-			reverse(&pre_tuple);
-			if (!pre_flow_table_query(&pre_tuple))
-			{
-				pre_flow_table_insert(&pre_tuple);
-			}
-			pre_flow_table_update(&pre_tuple);
-		}
-printf("flows: %d\n", pre_flow_table.size());
-		
-
-		//rebuild();
-		//return 0;
-
-		rewind(fp);
-
-		if(i == 1)
-		{
-			printf("FIFO:\n");
-			cache_init(FIFO);
-		}
-		if(i == 2)
-		{
-			printf("RANDOM:\n");
-			cache_init(RANDOM);
-		}
-		else if(i == 3)
-		{
-			printf("LRU:\n");
-			cache_init(LRU);
-		}
-		if(i == 4)
-		{
-			printf("LFU:\n");
-			cache_init(LFU);
-		}
-		else if(i == 5)
-		{
-			printf("ADT:\n");
-			cache_init(ADT);
-		}
-		else if(i == 6)
-		{
-			printf("ADT2:\n");
-			cache_init(ADT2);
-		}
-		else if(i == 7)
-		{
-			printf("BTE:\n");
-			cache_init(BTE);
-		}
-
-/*
-printf("Replacement...\n");
-npackets = 0;
-*/
-		while(1)
-		{
-			struct _5tuple tuple;
-			struct _5tuple swap_out;
-			
-			if (fscanf(fp, "%d %d %d %d %d %u %u\n",
-				&tuple.src_ip, &tuple.dst_ip, &tuple.src_port, &tuple.dst_port, &tuple.proto, &temp1, &temp2) == Null)
-			{
-				break;
+			default:
 			}
 
-/*
-if (++npackets & 0xFFFFF == 0)
-	printf("2#packets: %d\n", npackets);
-*/
-/*
-			if (fread(&tuple, sizeof(tuple), 1, fp) != 1)   // eof
-			{
-				break;
-			}
-*/
-			reverse(&tuple);
-
-			//x = check(tuple);
-			x = check_hash(tuple);
-
-			if (!cache_query(&tuple))	// 如果cache miss
-			{
+			while (fscanf(fp, "%d %d %d %d %d %u %u\n", &pre_tuple.src_ip, &pre_tuple.dst_ip, 
+						&pre_tuple.src_port, &pre_tuple.dst_port, &pre_tuple.proto, &tmp1, &tmp2) != EOF) {
+				struct _5tuple tuple;
+				struct _5tuple swap_out;
+				//if (fread(&tuple, sizeof(tuple), 1, fp) != 1) // eof
+				//   	break;
+				reverse(&tuple);
+				x = check_hash(tuple);
+				if (cache_query(&tuple))	// 如果cache hit, no need for subsequent processing
+					continue;
 				if (!flow_table_query(&tuple))	// 如果流表也miss，则证明是新流
-				{
 					flow_table_insert(&tuple);	// 插入流表
-				}
 
 				if (cache_swap(&tuple, &swap_out))	// swap_out tuple exists 如果cache行发生替换
-				{
 					flow_table_update(&swap_out);	// 替换出的元素更新流表
-				}
 			}
 
+			printf("#flows: %d\n", flow_table.size());
+			stat();
+			dump_flow_stats();
+			fclose(fp);
 		}
-
-printf("#flows: %d\n", flow_table.size());
-		stat();
-dump_flow_stats();
-		fclose(fp);
 	}
 	return 0;
 }
