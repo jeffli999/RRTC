@@ -14,19 +14,21 @@
 using namespace std;
 
 int  CACHE_LINE_SIZE;	// cache每行元素个数
-#define CACHE_LINE_NUM 1	// cache行数
+#define CACHE_LINE_NUM 	1	// cache行数
 
-#define FIFO 1       //先进先出（First In，First Out）
-#define RANDOM 2
-#define LRU 3        //Least recently used，最近最少使用
-#define LFU 4        //Least Frequently Used
-#define ADT 5
-#define ADT2 6
-#define BTE 7        //benefit to elephant,即RRTC
-#define MICE 11
-#define ELEPHANT 12
-#define RABBIT 13
-#define Null -1
+#define FIFO 		1       //先进先出（First In，First Out）
+#define RANDOM 		2
+#define LRU 		3	//Least recently used，最近最少使用
+#define LFU 		4       //Least Frequently Used
+#define ADT 		5
+#define ADT2 		6
+#define BTE 		7       //benefit to elephant,即RRTC
+#define MICE 		11
+#define ELEPHANT 	12
+#define RABBIT 		13
+#define Null 		-1
+
+#define MHASH_SIZE 	800
 
 FILE *fp;
 FILE *fp_stat;
@@ -112,11 +114,13 @@ typedef struct {
 
 map<header_t, flow_stat_t> pre_flow_table;	// 预处理流表结构，用于统计流的类型
 
-vector<vector<cache_node_t> > cache;
-map<header_t, flow_stat_t> flow_table;	// 流表结构
-cache_line_t cache_line[CACHE_LINE_NUM];	// 每行cache的统计信息结构
-map<u_int, evict_info_t> evict_stat;
-struct final_stat burst_stat;
+vector<vector<cache_node_t> > 	cache;
+map<header_t, flow_stat_t> 	flow_table;	// 流表结构
+cache_line_t 			cache_line[CACHE_LINE_NUM];	// 每行cache的统计信息结构
+map<u_int, evict_info_t> 	evict_stat;
+struct final_stat 		burst_stat;
+int nsample_win = 0;
+header_t			*elephants[MHASH_SIZE];
 
 void dump_flow_stats();
 
@@ -234,7 +238,7 @@ void dump_elephants()
 		if (it->second.len < 20)	// mice flow
 			continue;
 		//elephant flow
-		idx = tuple_hash(&it->first, 800);
+		idx = tuple_hash(&it->first, MHASH_SIZE);
 		printf("%3d : %4d\n", idx, it->second.len);
 	}
 }
@@ -242,13 +246,20 @@ void dump_elephants()
 
 void dump_hh_table()
 {
+	for(auto it = HH_Hash.begin(); it != HH_Hash.end(); it++){//更新HH_Table,移除c = 0的项
+		printf("%d : %d\n", it->first, it->second);
+	}
 }
 
 
 // statistics of flows in current sample window
 void sample_win_stats()
 {
+	if (nsample_win <= 1 || nsample_win > 3)
+		return;
 	// dump the HH table
+	printf("HH Table %d\n", nsample_win);
+	dump_hh_table();
 	// dump stats for elephant flows
 }
 
@@ -257,9 +268,11 @@ void sample_win_stats()
 int update_sample_win()
 {
 	int d =  (NF_Counter.Fsum == 0 ? 0 : NF_Counter.Csum / NF_Counter.Fsum); //计算衰减因子
+	//printf("d=%d\n", d);
 
 	for(auto iterHH = HH_Hash.begin(); iterHH != HH_Hash.end(); ){//更新HH_Table,移除c = 0的项
-		if(iterHH->second <= 2*d ) {
+		if(iterHH->second <= (2*d) ) {
+			printf("HH erase[%d]: %d / %d - %d\n", nsample_win, iterHH->first, iterHH->second, 2*d);
 			HH_Hash.erase(iterHH++);
 		} else {
 			iterHH->second -= 2*d;
@@ -278,12 +291,17 @@ int update_sample_win()
 
 int check_hash(header_t f, int nsamples)
 {
-	uint idx = tuple_hash(&f, 800);
+	uint idx = tuple_hash(&f, MHASH_SIZE);
 	update_tables(idx);
 
+	if (nsamples % sampleSize != 0)
+		return 0;
+
 	//更新HH_Table和NF_Table
-	if(nsamples % sampleSize == 0) 
-		update_sample_win();
+	sample_win_stats();
+	update_sample_win();
+	sample_win_stats();
+	return 1;
 }
 
 
@@ -878,7 +896,7 @@ int main(int argc, char *argv[] )
 	int nsamples = 0;
 
 	//vector<int> cacheList = {100, 200, 300, 400, 500};
-	vector<int> cacheList = {100, 200};
+	vector<int> cacheList = {100};
 	for (int cc = 0; cc < cacheList.size(); cc++) { 
 		for(int kc = 0; kc < 2; kc++ ) {
 			//initial
@@ -901,7 +919,7 @@ int main(int argc, char *argv[] )
 			header_t pre_tuple;
 			unsigned int tmp1, tmp2;
 			// pre-processing
-			while (fscanf(fp, "%d %d %d %d %d %u %u\n", &pre_tuple.sip, &pre_tuple.dip, 
+			while (fscanf(fp, "%u %u %hu %hu %c %u %u\n", &pre_tuple.sip, &pre_tuple.dip, 
 						&pre_tuple.sp, &pre_tuple.dp, &pre_tuple.prot, &tmp1, &tmp2) != EOF) {
 				//if (fread(&pre_tuple, sizeof(pre_tuple), 1, fp) != 1)	// eof
 				//	break;
@@ -911,8 +929,8 @@ int main(int argc, char *argv[] )
 				pre_flow_table_update(&pre_tuple);
 			}
 
-			printf("flows: %d\n", pre_flow_table.size());
-			dump_elephants();
+			printf("flows: %lu\n", pre_flow_table.size());
+			//dump_elephants();
 			//rebuild();
 			//return 0;
 			rewind(fp);
@@ -932,13 +950,14 @@ int main(int argc, char *argv[] )
 
 			header_t tuple;
 			header_t swap_out;
-			nsamples = 0;
-			while (fscanf(fp, "%d %d %d %d %d %u %u\n", &tuple.sip, &tuple.dip, 
+			nsamples = nsample_win = 0;
+			while (fscanf(fp, "%u %u %hu %hu %c %u %u\n", &tuple.sip, &tuple.dip, 
 						&tuple.sp, &tuple.dp, &tuple.prot, &tmp1, &tmp2) != EOF) {
 				//if (fread(&tuple, sizeof(tuple), 1, fp) != 1) // eof
 				//   	break;
 				reverse(&tuple);
-				check_hash(tuple, ++nsamples);
+				if (check_hash(tuple, ++nsamples)) // true for a sampling window completion
+					nsample_win++;
 				if (cache_query(&tuple))	// 如果cache hit, no need for subsequent processing
 					continue;
 				if (!flow_table_query(&tuple))	// 如果流表也miss，则证明是新流
@@ -948,9 +967,9 @@ int main(int argc, char *argv[] )
 					flow_table_update(&swap_out);	// 替换出的元素更新流表
 			}
 
-			printf("#flows: %d\n", flow_table.size());
+			printf("#flows: %lu\n", flow_table.size());
 			stat();
-			dump_flow_stats();
+			//dump_flow_stats();
 			fclose(fp);
 		}
 	}
