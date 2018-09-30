@@ -13,7 +13,7 @@
 #include <bitset>
 using namespace std;
 
-int  CACHE_LINE_SIZE;	// cache每行元素个数
+int  CACHE_LINE_SIZE;		// cache每行元素个数
 #define CACHE_LINE_NUM 	1	// cache行数
 
 #define FIFO 		1       //先进先出（First In，First Out）
@@ -29,10 +29,11 @@ int  CACHE_LINE_SIZE;	// cache每行元素个数
 #define Null 		-1
 
 #define MHASH_SIZE 	800
+#define ELEPHANT_LEN	20
 
 FILE *fp;
 FILE *fp_stat;
-int cur_policy;	// 当前的替换策略
+int cur_policy;		// 当前的替换策略
 int num = 0;
 
 // 流的五元组
@@ -120,7 +121,7 @@ cache_line_t 			cache_line[CACHE_LINE_NUM];	// 每行cache的统计信息结构
 map<u_int, evict_info_t> 	evict_stat;
 struct final_stat 		burst_stat;
 int nsample_win = 0;
-header_t			*elephants[MHASH_SIZE];
+u_int				elephants[MHASH_SIZE];
 
 void dump_flow_stats();
 
@@ -141,6 +142,26 @@ const int hhSize = 500;
 const int maxC = 50;
 int updateTime = 0;
 int x = 0; //标志位
+
+u_int tuple_hash(const header_t *tuple, u_int number);
+
+// collect elephant flows indexed by the hash ids of their headers, return the number of elephants
+int collect_elephants()
+{
+	int	idx;
+	map<header_t, flow_stat_t>::iterator it;
+
+	printf("elphants:\n");
+	for (it = pre_flow_table.begin(); it != pre_flow_table.end(); it++) {
+		if (it->second.len < ELEPHANT_LEN)	// mice flow
+			continue;
+		//elephant flow
+		idx = tuple_hash(&it->first, MHASH_SIZE);
+		elephants[idx] = it->second.len;
+		printf("%3d : %4d\n", idx, it->second.len);
+	}
+}
+
 
 /*
  * map不是严格O（1）
@@ -204,7 +225,6 @@ int check( header_t f)
  */
 vector<uint> NF_Hash(2000, 0);  //(f, c)
 map<uint, uint> HH_Hash; //(f, c)
-u_int tuple_hash(const header_t *tuple, u_int number);
 
 
 // given an incoming packet of flow[idx], update NF table, HH table and counters
@@ -235,7 +255,7 @@ void dump_elephants()
 
 	printf("elephants: idx : len\n");
 	for (it = pre_flow_table.begin(); it != pre_flow_table.end(); it++) {
-		if (it->second.len < 20)	// mice flow
+		if (it->second.len < ELEPHANT_LEN)	// mice flow
 			continue;
 		//elephant flow
 		idx = tuple_hash(&it->first, MHASH_SIZE);
@@ -781,7 +801,7 @@ void stat()	// 统计
 			figure1_evict[8] += it->second.evict_times;
 		}
 
-		if (it->second.len < 20) {
+		if (it->second.len < ELEPHANT_LEN) {
 			a += it->second.evict_times;  //a小鼠流驱逐次数
 		} else {
 			b += it->second.evict_times;  //b大象流驱逐次数
@@ -792,7 +812,7 @@ void stat()	// 统计
 		} else {
 			if (it->second.len < 4) {
 				evict_stat[it->second.evict_times].mice += it->second.evict_times;
-			} else if (it->second.len < 20) {
+			} else if (it->second.len < ELEPHANT_LEN) {
 				evict_stat[it->second.evict_times].rabbit += it->second.evict_times;
 			} else {
 				evict_stat[it->second.evict_times].elephant += it->second.evict_times;
@@ -895,13 +915,31 @@ int main(int argc, char *argv[] )
 	int kind[4] = {3, 7};
 	int nsamples = 0;
 
+	// build pre_flow_table
+	fp = fopen(argv[1], "rb");
+	header_t pre_tuple;
+	unsigned int tmp1, tmp2;
+	pre_flow_table.clear();
+	while (fscanf(fp, "%u %u %hu %hu %c %u %u\n", &pre_tuple.sip, &pre_tuple.dip, 
+				&pre_tuple.sp, &pre_tuple.dp, &pre_tuple.prot, &tmp1, &tmp2) != EOF) {
+		//if (fread(&pre_tuple, sizeof(pre_tuple), 1, fp) != 1)	// eof
+		//	break;
+		reverse(&pre_tuple);
+		if (!pre_flow_table_query(&pre_tuple))
+			pre_flow_table_insert(&pre_tuple);
+		pre_flow_table_update(&pre_tuple);
+	}
+	printf("flows: %lu\n", pre_flow_table.size());
+	collect_elephants();
+	dump_elephants();
+
 	//vector<int> cacheList = {100, 200, 300, 400, 500};
 	vector<int> cacheList = {100};
 	for (int cc = 0; cc < cacheList.size(); cc++) { 
 		for(int kc = 0; kc < 2; kc++ ) {
+			rewind(fp);
 			//initial
 			CACHE_LINE_SIZE = cacheList[cc];
-			pre_flow_table.clear();
 			flow_table.clear();
 			evict_stat.clear();
 			cache = vector<vector<cache_node_t> >(CACHE_LINE_NUM, vector<cache_node_t>(CACHE_LINE_SIZE));
@@ -915,25 +953,8 @@ int main(int argc, char *argv[] )
 			updateTime = 0;
 			srand((unsigned)time(NULL));	// 产生md5 hash中所用伪随机数种子
 
-			fp = fopen(argv[1], "rb");
-			header_t pre_tuple;
-			unsigned int tmp1, tmp2;
-			// pre-processing
-			while (fscanf(fp, "%u %u %hu %hu %c %u %u\n", &pre_tuple.sip, &pre_tuple.dip, 
-						&pre_tuple.sp, &pre_tuple.dp, &pre_tuple.prot, &tmp1, &tmp2) != EOF) {
-				//if (fread(&pre_tuple, sizeof(pre_tuple), 1, fp) != 1)	// eof
-				//	break;
-				reverse(&pre_tuple);
-				if (!pre_flow_table_query(&pre_tuple))
-					pre_flow_table_insert(&pre_tuple);
-				pre_flow_table_update(&pre_tuple);
-			}
-
-			printf("flows: %lu\n", pre_flow_table.size());
-			//dump_elephants();
 			//rebuild();
 			//return 0;
-			rewind(fp);
 
 			switch (kind[kc]) {
 			case 3: 
@@ -967,12 +988,11 @@ int main(int argc, char *argv[] )
 					flow_table_update(&swap_out);	// 替换出的元素更新流表
 			}
 
-			printf("#flows: %lu\n", flow_table.size());
 			stat();
 			//dump_flow_stats();
-			fclose(fp);
 		}
 	}
+	fclose(fp);
 	return 0;
 }
 
